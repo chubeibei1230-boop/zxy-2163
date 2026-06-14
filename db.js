@@ -21,6 +21,17 @@ const initDb = () => {
       capacity_per_spec INTEGER NOT NULL DEFAULT 50
     );
 
+    CREATE TABLE IF NOT EXISTS import_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_code TEXT UNIQUE NOT NULL,
+      operator TEXT NOT NULL,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+
     CREATE TABLE IF NOT EXISTS badge_holders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       holder_code TEXT UNIQUE NOT NULL,
@@ -29,8 +40,10 @@ const initDb = () => {
       drawer_id INTEGER NOT NULL,
       responsible_person TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT '待配发',
+      batch_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      FOREIGN KEY (drawer_id) REFERENCES drawers(id)
+      FOREIGN KEY (drawer_id) REFERENCES drawers(id),
+      FOREIGN KEY (batch_id) REFERENCES import_batches(id)
     );
 
     CREATE TABLE IF NOT EXISTS dispatches (
@@ -90,9 +103,14 @@ const initDb = () => {
     CREATE INDEX IF NOT EXISTS idx_holders_lanyard ON badge_holders(lanyard_type);
     CREATE INDEX IF NOT EXISTS idx_holders_person ON badge_holders(responsible_person);
     CREATE INDEX IF NOT EXISTS idx_holders_drawer ON badge_holders(drawer_id);
+    CREATE INDEX IF NOT EXISTS idx_holders_batch ON badge_holders(batch_id);
     CREATE INDEX IF NOT EXISTS idx_dispatches_returned ON dispatches(returned);
     CREATE INDEX IF NOT EXISTS idx_recoveries_review ON recoveries(review_status);
   `);
+
+  try {
+    db.exec("ALTER TABLE badge_holders ADD COLUMN batch_id INTEGER REFERENCES import_batches(id)");
+  } catch (e) {}
 
   const drawerCount = db.prepare('SELECT COUNT(*) as cnt FROM drawers').get().cnt;
   if (drawerCount === 0) {

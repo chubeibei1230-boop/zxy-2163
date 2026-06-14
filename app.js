@@ -26,14 +26,16 @@ app.get('/', (req, res) => {
     port: PORT,
     endpoints: {
       holders: {
-        'POST /api/holders/batch-import': '批次入库',
-        'GET /api/holders': '多条件查询牌夹列表',
-        'GET /api/holders/:id': '牌夹详情（含配发/回收/复查/补记记录）',
-        'PUT /api/holders/:id': '更新牌夹信息',
-        'GET /api/holders/drawers/list': '抽屉列表及使用情况'
+        'POST /api/holders/batch-import': '批次入库（需传operator）',
+        'GET /api/holders': '多条件查询牌夹列表（支持batch_id）',
+        'GET /api/holders/:id': '牌夹详情（含批次、配发/回收/复查/补记记录）',
+        'PUT /api/holders/:id': '更新牌夹信息（改抽屉/规格时校验容量）',
+        'GET /api/holders/drawers/list': '抽屉列表及使用情况',
+        'GET /api/holders/batches/list': '入库批次列表',
+        'GET /api/holders/batches/:id': '批次详情及包含的牌夹'
       },
       dispatches: {
-        'POST /api/dispatches': '牌夹配发（支持批量）',
+        'POST /api/dispatches': '牌夹配发（仅待配发/可继续使用可配发）',
         'GET /api/dispatches': '配发记录列表',
         'GET /api/dispatches/:id': '配发详情'
       },

@@ -58,9 +58,11 @@ router.post('/', (req, res) => {
       `);
       const updateStatus = db.prepare("UPDATE badge_holders SET status = '已配发' WHERE id = ?");
 
+      const DISPATCHABLE_STATUSES = ['待配发', '可继续使用'];
+
       for (const h of holders) {
-        if (h.status === '已配发') {
-          failed.push({ holder_id: h.id, holder_code: h.holder_code, reason: '牌夹已在配发状态，不能重复配发' });
+        if (!DISPATCHABLE_STATUSES.includes(h.status)) {
+          failed.push({ holder_id: h.id, holder_code: h.holder_code, reason: `牌夹状态为「${h.status}」，不可配发，仅「待配发」和「可继续使用」状态允许配发` });
           continue;
         }
 

@@ -11,13 +11,14 @@ router.get('/supplement-frequency', (req, res) => {
   try {
     const data = db.prepare(`
       SELECT
-        reporter,
+        COALESCE(bh.responsible_person, ls.reporter) as responsible_person,
         COUNT(*) as supplement_count,
-        MIN(report_date) as first_date,
-        MAX(report_date) as last_date
-      FROM loss_supplements
-      WHERE report_date >= datetime('now','localtime', '-' || ? || ' days')
-      GROUP BY reporter
+        MIN(ls.report_date) as first_date,
+        MAX(ls.report_date) as last_date
+      FROM loss_supplements ls
+      LEFT JOIN badge_holders bh ON bh.id = ls.holder_id
+      WHERE ls.report_date >= datetime('now','localtime', '-' || ? || ' days')
+      GROUP BY COALESCE(bh.responsible_person, ls.reporter)
       HAVING supplement_count >= ?
       ORDER BY supplement_count DESC
     `).all(daysVal, thresholdVal);
@@ -39,28 +40,29 @@ router.get('/consecutive-losses', (req, res) => {
   try {
     const supplements = db.prepare(`
       SELECT
-        ls.reporter,
+        ls.id,
         ls.holder_id,
         ls.holder_code,
         ls.loss_date,
         ls.report_date,
         ls.loss_description,
         ls.is_resolved,
+        ls.reporter,
         bh.responsible_person
       FROM loss_supplements ls
       LEFT JOIN badge_holders bh ON bh.id = ls.holder_id
-      ORDER BY ls.reporter, ls.report_date DESC
+      ORDER BY COALESCE(bh.responsible_person, ls.reporter), ls.report_date DESC
     `).all();
 
     const grouped = {};
     for (const s of supplements) {
-      const key = s.reporter;
+      const key = s.responsible_person || s.reporter;
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(s);
     }
 
     const result = [];
-    for (const [reporter, list] of Object.entries(grouped)) {
+    for (const [person, list] of Object.entries(grouped)) {
       let consecutive = 0;
       let maxConsecutive = 0;
       const streak = [];
@@ -78,7 +80,7 @@ router.get('/consecutive-losses', (req, res) => {
 
       if (maxConsecutive >= thresholdVal) {
         result.push({
-          reporter,
+          responsible_person: person,
           consecutive_unresolved: maxConsecutive,
           total_supplements: list.length,
           recent_unresolved: streak.slice(0, 10)
@@ -205,16 +207,6 @@ router.get('/drawer-overcapacity', (req, res) => {
 
 router.get('/all', (req, res) => {
   try {
-    const supplementFreq = new Promise(resolve => {
-      db.prepare(`
-        SELECT reporter, COUNT(*) as cnt
-        FROM loss_supplements
-        WHERE report_date >= datetime('now','localtime', '-30 days')
-        GROUP BY reporter HAVING cnt >= 3 ORDER BY cnt DESC LIMIT 10
-      `).all();
-      resolve(true);
-    });
-
     const result = {
       success: true,
       generated_at: new Date().toISOString(),
@@ -222,10 +214,13 @@ router.get('/all', (req, res) => {
     };
 
     result.alerts.high_frequency_supplements = db.prepare(`
-      SELECT reporter, COUNT(*) as supplement_count
-      FROM loss_supplements
-      WHERE report_date >= datetime('now','localtime', '-30 days')
-      GROUP BY reporter HAVING supplement_count >= 3
+      SELECT
+        COALESCE(bh.responsible_person, ls.reporter) as responsible_person,
+        COUNT(*) as supplement_count
+      FROM loss_supplements ls
+      LEFT JOIN badge_holders bh ON bh.id = ls.holder_id
+      WHERE ls.report_date >= datetime('now','localtime', '-30 days')
+      GROUP BY COALESCE(bh.responsible_person, ls.reporter) HAVING supplement_count >= 3
       ORDER BY supplement_count DESC LIMIT 10
     `).all();
 
