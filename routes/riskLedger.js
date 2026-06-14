@@ -846,6 +846,22 @@ router.post('/:risk_key/handle', (req, res) => {
         `).run(handler || null, handle_result || null, handle_notes || null, risk.exception_id);
       }
 
+      if (finalStatus === '已闭环' && risk.risk_type === '逾期未归还' && risk.dispatch_id) {
+        db.prepare(`
+          UPDATE exception_records SET
+            status = '已闭环',
+            handler = COALESCE(?, handler),
+            handle_date = datetime('now','localtime'),
+            handle_result = COALESCE(?, handle_result),
+            handle_notes = COALESCE(?, handle_notes),
+            updated_at = datetime('now','localtime')
+          WHERE source_type = 'dispatch'
+            AND source_id = ?
+            AND exception_type = '逾期未归还'
+            AND status != '已闭环'
+        `).run(handler || null, handle_result || null, handle_notes || null, risk.dispatch_id);
+      }
+
       if (finalStatus === '已闭环' && risk.risk_type === '延期申请待审批' && risk.extension_id) {
         db.prepare(`
           UPDATE dispatch_extensions SET
@@ -856,6 +872,42 @@ router.post('/:risk_key/handle', (req, res) => {
             updated_at = datetime('now','localtime')
           WHERE id = ?
         `).run(handler || null, handle_notes || null, risk.extension_id);
+      }
+
+      if (finalStatus === '已闭环' && risk.risk_type === '待复查' && risk.recovery_id) {
+        const recovery = db.prepare('SELECT * FROM recoveries WHERE id = ?').get(risk.recovery_id);
+        if (recovery && recovery.review_status === '待复查') {
+          const reviewResult = '可继续使用';
+          db.prepare(`
+            INSERT INTO reviews (recovery_id, holder_id, reviewer, review_result, review_notes)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            recovery.id,
+            recovery.holder_id,
+            handler,
+            reviewResult,
+            handle_notes || handle_result || '风险台账闭环处理'
+          );
+
+          db.prepare("UPDATE recoveries SET review_status = '复查通过' WHERE id = ?").run(recovery.id);
+          db.prepare('UPDATE badge_holders SET status = ? WHERE id = ?').run(reviewResult, recovery.holder_id);
+
+          for (const exceptionType of ['复查超时', '缺件异常', '损坏异常']) {
+            db.prepare(`
+              UPDATE exception_records SET
+                status = '已闭环',
+                handler = COALESCE(?, handler),
+                handle_date = datetime('now','localtime'),
+                handle_result = COALESCE(?, handle_result),
+                handle_notes = COALESCE(?, handle_notes),
+                updated_at = datetime('now','localtime')
+              WHERE source_type = 'recovery'
+                AND source_id = ?
+                AND exception_type = ?
+                AND status != '已闭环'
+            `).run(handler || null, handle_result || `复查完成，结果：${reviewResult}`, handle_notes || null, recovery.id, exceptionType);
+          }
+        }
       }
 
       const record = db.prepare('SELECT * FROM risk_ledger_handles WHERE id = ?').get(info.lastInsertRowid);
