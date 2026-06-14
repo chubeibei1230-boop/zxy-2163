@@ -219,6 +219,7 @@ const collectAllRisks = (txDb = db) => {
       r.id as recovery_id,
       r.holder_id,
       r.holder_code,
+      r.dispatch_id,
       r.recovery_date,
       r.condition,
       r.damage_description,
@@ -340,6 +341,7 @@ const collectAllRisks = (txDb = db) => {
     LEFT JOIN badge_holders bh ON bh.id = er.holder_id
     LEFT JOIN dispatches d ON d.id = er.source_id AND er.source_type = 'dispatch'
     WHERE er.status != '已闭环'
+      AND er.exception_type NOT IN ('逾期未归还', '缺件异常', '复查超时')
     ORDER BY
       CASE er.exception_level WHEN '紧急' THEN 1 WHEN '重要' THEN 2 WHEN '一般' THEN 3 END,
       er.discovered_date ASC
@@ -414,6 +416,120 @@ const attachHandleInfo = (risks, txDb = db) => {
   });
 };
 
+const enrichRisksWithRelatedInfo = (risks, txDb = db) => {
+  if (risks.length === 0) return risks;
+
+  const holderIds = risks.filter(r => r.holder_id).map(r => r.holder_id);
+  const uniqueHolderIds = [...new Set(holderIds)];
+  if (uniqueHolderIds.length === 0) return risks;
+
+  const placeholders = uniqueHolderIds.map(() => '?').join(',');
+
+  const extStats = txDb.prepare(`
+    SELECT holder_id,
+           COUNT(*) as total,
+           SUM(CASE WHEN approval_status = '待审批' THEN 1 ELSE 0 END) as pending,
+           SUM(CASE WHEN approval_status = '已通过' THEN 1 ELSE 0 END) as approved,
+           SUM(CASE WHEN approval_status = '已驳回' THEN 1 ELSE 0 END) as rejected
+    FROM dispatch_extensions
+    WHERE holder_id IN (${placeholders})
+    GROUP BY holder_id
+  `).all(...uniqueHolderIds);
+
+  const extMap = {};
+  for (const e of extStats) extMap[e.holder_id] = e;
+
+  const recoveryInfo = txDb.prepare(`
+    SELECT r.holder_id,
+           r.id as recovery_id,
+           r.recovery_date,
+           r.condition,
+           r.review_status,
+           r.has_missing_parts,
+           rv.id as review_id,
+           rv.review_date,
+           rv.review_result,
+           rv.reviewer
+    FROM recoveries r
+    LEFT JOIN reviews rv ON rv.recovery_id = r.id
+    WHERE r.holder_id IN (${placeholders})
+    ORDER BY r.recovery_date DESC
+  `).all(...uniqueHolderIds);
+
+  const recoveryMap = {};
+  for (const r of recoveryInfo) {
+    if (!recoveryMap[r.holder_id]) recoveryMap[r.holder_id] = r;
+  }
+
+  const exceptionStats = txDb.prepare(`
+    SELECT holder_id,
+           COUNT(*) as total_count,
+           SUM(CASE WHEN status != '已闭环' THEN 1 ELSE 0 END) as open_count,
+           MAX(CASE WHEN status != '已闭环' THEN discovered_date ELSE NULL END) as latest_open_date
+    FROM exception_records
+    WHERE holder_id IN (${placeholders})
+    GROUP BY holder_id
+  `).all(...uniqueHolderIds);
+
+  const excMap = {};
+  for (const e of exceptionStats) excMap[e.holder_id] = e;
+
+  const latestExceptions = txDb.prepare(`
+    SELECT er.holder_id, er.id as exception_id, er.exception_type, er.status, er.discovered_date
+    FROM exception_records er
+    INNER JOIN (
+      SELECT holder_id, MAX(id) as max_id
+      FROM exception_records
+      WHERE holder_id IN (${placeholders})
+      GROUP BY holder_id
+    ) latest ON latest.holder_id = er.holder_id AND latest.max_id = er.id
+  `).all(...uniqueHolderIds);
+
+  const latestExcMap = {};
+  for (const e of latestExceptions) latestExcMap[e.holder_id] = e;
+
+  return risks.map(r => {
+    const holderId = r.holder_id;
+    const ext = extMap[holderId];
+    const rec = recoveryMap[holderId];
+    const excStat = excMap[holderId];
+    const latestExc = latestExcMap[holderId];
+
+    return {
+      ...r,
+      extension_info: ext ? {
+        total: ext.total,
+        pending: ext.pending,
+        approved: ext.approved,
+        rejected: ext.rejected,
+        has_pending: ext.pending > 0
+      } : { total: 0, pending: 0, approved: 0, rejected: 0, has_pending: false },
+      recovery_info: rec ? {
+        recovery_id: rec.recovery_id,
+        recovery_date: rec.recovery_date,
+        condition: rec.condition,
+        review_status: rec.review_status,
+        has_missing_parts: rec.has_missing_parts,
+        latest_review: rec.review_id ? {
+          review_id: rec.review_id,
+          review_date: rec.review_date,
+          review_result: rec.review_result,
+          reviewer: rec.reviewer
+        } : null
+      } : null,
+      exception_info: excStat ? {
+        total_count: excStat.total_count,
+        open_count: excStat.open_count,
+        latest_open_date: excStat.latest_open_date,
+        latest_exception_type: latestExc ? latestExc.exception_type : null,
+        latest_exception_status: latestExc ? latestExc.status : null,
+        latest_exception_id: latestExc ? latestExc.exception_id : null,
+        has_open: excStat.open_count > 0
+      } : { total_count: 0, open_count: 0, latest_open_date: null, latest_exception_type: null, latest_exception_status: null, latest_exception_id: null, has_open: false }
+    };
+  });
+};
+
 router.get('/', (req, res) => {
   const {
     page = 1, page_size = 20,
@@ -428,8 +544,9 @@ router.get('/', (req, res) => {
   try {
     const allRisks = collectAllRisks(db);
     const withHandle = attachHandleInfo(allRisks, db);
+    const enriched = enrichRisksWithRelatedInfo(withHandle, db);
 
-    withHandle.sort((a, b) => {
+    enriched.sort((a, b) => {
       if (sort_by === 'date') {
         return new Date(b.risk_date) - new Date(a.risk_date);
       }
@@ -462,7 +579,7 @@ router.get('/', (req, res) => {
       return true;
     };
 
-    const filtered = withHandle.filter(filterFn);
+    const filtered = enriched.filter(filterFn);
     const total = filtered.length;
     const pageData = filtered.slice(offset, offset + limit);
 
@@ -610,8 +727,9 @@ router.get('/:risk_key', (req, res) => {
   try {
     const allRisks = collectAllRisks(db);
     const withHandle = attachHandleInfo(allRisks, db);
+    const enriched = enrichRisksWithRelatedInfo(withHandle, db);
 
-    const risk = withHandle.find(r => r.risk_key === req.params.risk_key);
+    const risk = enriched.find(r => r.risk_key === req.params.risk_key);
     if (!risk) {
       return res.status(404).json({ error: '风险记录不存在' });
     }
@@ -715,6 +833,31 @@ router.post('/:risk_key/handle', (req, res) => {
         finalStatus
       );
 
+      if (finalStatus === '已闭环' && risk.risk_type === '未闭环异常' && risk.exception_id) {
+        db.prepare(`
+          UPDATE exception_records SET
+            status = '已闭环',
+            handler = COALESCE(?, handler),
+            handle_date = datetime('now','localtime'),
+            handle_result = COALESCE(?, handle_result),
+            handle_notes = COALESCE(?, handle_notes),
+            updated_at = datetime('now','localtime')
+          WHERE id = ?
+        `).run(handler || null, handle_result || null, handle_notes || null, risk.exception_id);
+      }
+
+      if (finalStatus === '已闭环' && risk.risk_type === '延期申请待审批' && risk.extension_id) {
+        db.prepare(`
+          UPDATE dispatch_extensions SET
+            approval_status = '已驳回',
+            approver = COALESCE(?, approver),
+            approval_notes = COALESCE(?, approval_notes),
+            approval_date = datetime('now','localtime'),
+            updated_at = datetime('now','localtime')
+          WHERE id = ?
+        `).run(handler || null, handle_notes || null, risk.extension_id);
+      }
+
       const record = db.prepare('SELECT * FROM risk_ledger_handles WHERE id = ?').get(info.lastInsertRowid);
 
       return {
@@ -735,8 +878,9 @@ router.get('/stats/summary', (req, res) => {
   try {
     const allRisks = collectAllRisks(db);
     const withHandle = attachHandleInfo(allRisks, db);
+    const enriched = enrichRisksWithRelatedInfo(withHandle, db);
 
-    const total = withHandle.length;
+    const total = enriched.length;
 
     const byType = {};
     const byLevel = { '紧急': 0, '重要': 0, '一般': 0 };
@@ -744,7 +888,7 @@ router.get('/stats/summary', (req, res) => {
     const byResponsiblePerson = {};
     const byRecipient = {};
 
-    for (const r of withHandle) {
+    for (const r of enriched) {
       if (!byType[r.risk_type]) {
         byType[r.risk_type] = { count: 0, pending: 0, processing: 0, closed: 0 };
       }
@@ -806,7 +950,7 @@ router.get('/stats/summary', (req, res) => {
       trendData[dateStr] = { date: dateStr, total: 0, new_risks: 0 };
     }
 
-    for (const r of withHandle) {
+    for (const r of enriched) {
       const riskDate = (r.risk_date || '').split(' ')[0].split('T')[0];
       if (trendData[riskDate]) {
         trendData[riskDate].new_risks++;
