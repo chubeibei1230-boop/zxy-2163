@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { syncTimeBasedExceptions } = require('./exceptions');
 
 const router = express.Router();
 
@@ -122,6 +123,8 @@ router.get('/pending-review-list', (req, res) => {
 
 router.get('/status-overview', (req, res) => {
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const byStatus = db.prepare(`
       SELECT status, COUNT(*) as count FROM badge_holders
       GROUP BY status ORDER BY count DESC

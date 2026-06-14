@@ -34,7 +34,8 @@ router.post('/', (req, res) => {
       `);
 
       const info = insertReview.run(recovery.id, holder.id, reviewer, review_result, review_notes || null);
-      db.prepare("UPDATE recoveries SET review_status = '复查通过' WHERE id = ?").run(recovery.id);
+      const recoveryReviewStatus = review_result === '可继续使用' ? '复查通过' : '复查不通过';
+      db.prepare('UPDATE recoveries SET review_status = ? WHERE id = ?').run(recoveryReviewStatus, recovery.id);
       db.prepare('UPDATE badge_holders SET status = ? WHERE id = ?').run(review_result, holder.id);
 
       closeException('recovery', recovery.id, '复查超时', reviewer, `复查完成，结果：${review_result}`, review_notes, db);

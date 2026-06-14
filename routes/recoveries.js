@@ -60,7 +60,7 @@ router.post('/', (req, res) => {
       if (hasMissing) {
         newStatus = '缺件观察';
       } else {
-        newStatus = '待复查';
+        newStatus = '已回收';
       }
 
       const info = insertRecovery.run(

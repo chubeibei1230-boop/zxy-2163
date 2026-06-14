@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { syncTimeBasedExceptions } = require('./exceptions');
 
 const router = express.Router();
 
@@ -207,6 +208,8 @@ router.get('/drawer-overcapacity', (req, res) => {
 
 router.get('/all', (req, res) => {
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const result = {
       success: true,
       generated_at: new Date().toISOString(),

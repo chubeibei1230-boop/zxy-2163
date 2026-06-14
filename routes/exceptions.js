@@ -7,6 +7,127 @@ const VALID_EXCEPTION_TYPES = ['缺件异常', '损坏异常', '遗失异常', '
 const VALID_STATUSES = ['待处理', '处理中', '已闭环'];
 const VALID_LEVELS = ['一般', '重要', '紧急'];
 
+const buildExceptionFilters = (query, defaultOpenOnly = false) => {
+  const {
+    exception_type, status, responsible_person, holder_code, spec,
+    start_date, end_date, exception_level
+  } = query;
+
+  const conditions = [];
+  const params = [];
+
+  if (exception_type) {
+    conditions.push('er.exception_type = ?');
+    params.push(exception_type);
+  }
+  if (status) {
+    conditions.push('er.status = ?');
+    params.push(status);
+  } else if (defaultOpenOnly) {
+    conditions.push("er.status != '已闭环'");
+  }
+  if (exception_level) {
+    conditions.push('er.exception_level = ?');
+    params.push(exception_level);
+  }
+  if (responsible_person) {
+    conditions.push('er.responsible_person = ?');
+    params.push(responsible_person);
+  }
+  if (holder_code) {
+    conditions.push('er.holder_code LIKE ?');
+    params.push('%' + holder_code + '%');
+  }
+  if (spec) {
+    conditions.push('bh.spec = ?');
+    params.push(spec);
+  }
+  if (start_date) {
+    conditions.push('er.discovered_date >= ?');
+    params.push(start_date);
+  }
+  if (end_date) {
+    conditions.push('er.discovered_date <= ?');
+    params.push(end_date);
+  }
+
+  return {
+    where: conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '',
+    params
+  };
+};
+
+const syncTimeBasedExceptions = (txDb = db) => {
+  let createdCount = 0;
+
+  const overdueDispatches = txDb.prepare(`
+    SELECT d.*, bh.responsible_person, bh.spec
+    FROM dispatches d
+    LEFT JOIN badge_holders bh ON bh.id = d.holder_id
+    WHERE d.returned = 0
+      AND d.expected_return_date IS NOT NULL
+      AND d.expected_return_date < datetime('now','localtime')
+  `).all();
+
+  for (const d of overdueDispatches) {
+    const existing = txDb.prepare(`
+      SELECT * FROM exception_records
+      WHERE source_type = 'dispatch' AND source_id = ? AND exception_type = '逾期未归还' AND status != '已闭环'
+    `).get(d.id);
+
+    if (!existing) {
+      const days = Math.floor((Date.now() - new Date(d.expected_return_date).getTime()) / (1000 * 60 * 60 * 24));
+      txDb.prepare(`
+        INSERT INTO exception_records (
+          holder_id, holder_code, exception_type, exception_level,
+          source_type, source_id, status, responsible_person,
+          discovered_date, description
+        ) VALUES (?, ?, '逾期未归还', '重要', 'dispatch', ?, '待处理', ?, ?, ?)
+      `).run(
+        d.holder_id, d.holder_code, d.id,
+        d.responsible_person || null,
+        d.expected_return_date,
+        `牌夹已逾期 ${days} 天未归还，领用人: ${d.recipient}`
+      );
+      createdCount++;
+    }
+  }
+
+  const reviewDelays = txDb.prepare(`
+    SELECT r.*, bh.responsible_person, bh.spec,
+           CAST((julianday('now','localtime') - julianday(r.recovery_date)) * 24 AS INTEGER) as delay_hours
+    FROM recoveries r
+    LEFT JOIN badge_holders bh ON bh.id = r.holder_id
+    WHERE r.review_status = '待复查'
+      AND CAST((julianday('now','localtime') - julianday(r.recovery_date)) * 24 AS INTEGER) >= 24
+  `).all();
+
+  for (const r of reviewDelays) {
+    const existing = txDb.prepare(`
+      SELECT * FROM exception_records
+      WHERE source_type = 'recovery' AND source_id = ? AND exception_type = '复查超时' AND status != '已闭环'
+    `).get(r.id);
+
+    if (!existing) {
+      txDb.prepare(`
+        INSERT INTO exception_records (
+          holder_id, holder_code, exception_type, exception_level,
+          source_type, source_id, status, responsible_person,
+          discovered_date, description
+        ) VALUES (?, ?, '复查超时', '一般', 'recovery', ?, '待处理', ?, ?, ?)
+      `).run(
+        r.holder_id, r.holder_code, r.id,
+        r.responsible_person || null,
+        r.recovery_date,
+        `回收后已超过 ${r.delay_hours} 小时未复查，回收时状态: ${r.condition}`
+      );
+      createdCount++;
+    }
+  }
+
+  return createdCount;
+};
+
 const getOrCreateException = (holderId, holderCode, exceptionType, sourceType, sourceId, description, responsiblePerson, txDb = db) => {
   const existing = txDb.prepare(`
     SELECT * FROM exception_records
@@ -50,52 +171,14 @@ const closeException = (sourceType, sourceId, exceptionType, handler, handleResu
 };
 
 router.get('/', (req, res) => {
-  const {
-    exception_type, status, responsible_person, holder_code, spec,
-    start_date, end_date, exception_level, page = 1, page_size = 20
-  } = req.query;
-
-  const conditions = [];
-  const params = [];
-
-  if (exception_type) {
-    conditions.push('er.exception_type = ?');
-    params.push(exception_type);
-  }
-  if (status) {
-    conditions.push('er.status = ?');
-    params.push(status);
-  }
-  if (exception_level) {
-    conditions.push('er.exception_level = ?');
-    params.push(exception_level);
-  }
-  if (responsible_person) {
-    conditions.push('er.responsible_person = ?');
-    params.push(responsible_person);
-  }
-  if (holder_code) {
-    conditions.push('er.holder_code LIKE ?');
-    params.push('%' + holder_code + '%');
-  }
-  if (spec) {
-    conditions.push('bh.spec = ?');
-    params.push(spec);
-  }
-  if (start_date) {
-    conditions.push('er.discovered_date >= ?');
-    params.push(start_date);
-  }
-  if (end_date) {
-    conditions.push('er.discovered_date <= ?');
-    params.push(end_date);
-  }
-
-  const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+  const { page = 1, page_size = 20 } = req.query;
+  const { where, params } = buildExceptionFilters(req.query);
   const limit = Math.min(parseInt(page_size) || 20, 100);
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const total = db.prepare(`
       SELECT COUNT(*) as cnt FROM exception_records er
       LEFT JOIN badge_holders bh ON bh.id = er.holder_id
@@ -246,6 +329,15 @@ router.post('/:id/handle', (req, res) => {
         WHERE id = ?
       `).run(newStatus, handler || null, newStatus, handle_result || null, handle_notes || null, req.params.id);
 
+      if (newStatus === '已闭环' && record.source_type === 'loss_supplement') {
+        db.prepare(`
+          UPDATE loss_supplements SET
+            is_resolved = 1,
+            supplement_notes = COALESCE(?, supplement_notes)
+          WHERE id = ?
+        `).run(handle_notes || handle_result || null, record.source_id);
+      }
+
       const updated = db.prepare('SELECT * FROM exception_records WHERE id = ?').get(req.params.id);
 
       return { success: true, exception: updated };
@@ -292,6 +384,8 @@ router.put('/:id', (req, res) => {
 
 router.get('/stats/summary', (req, res) => {
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const byType = db.prepare(`
       SELECT exception_type, COUNT(*) as count,
              SUM(CASE WHEN status = '待处理' THEN 1 ELSE 0 END) as pending_count,
@@ -357,19 +451,26 @@ router.get('/stats/summary', (req, res) => {
 
 router.get('/todo/list', (req, res) => {
   const { page = 1, page_size = 50 } = req.query;
+  const { where, params } = buildExceptionFilters(req.query, true);
   const limit = Math.min(parseInt(page_size) || 50, 200);
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
   try {
-    const total = db.prepare(`
-      SELECT COUNT(*) as cnt FROM exception_records WHERE status != '已闭环'
-    `).get().cnt;
+    db.transaction(() => syncTimeBasedExceptions(db))();
 
-    const data = db.prepare(`
-      SELECT er.*, bh.spec, bh.lanyard_type, bh.status as holder_status, bh.responsible_person
+    const total = db.prepare(`
+      SELECT COUNT(*) as cnt
       FROM exception_records er
       LEFT JOIN badge_holders bh ON bh.id = er.holder_id
-      WHERE er.status != '已闭环'
+      ${where}
+    `).get(...params).cnt;
+
+    const data = db.prepare(`
+      SELECT er.*, bh.spec, bh.lanyard_type, bh.status as holder_status, bh.responsible_person, bh.drawer_id, d.drawer_code
+      FROM exception_records er
+      LEFT JOIN badge_holders bh ON bh.id = er.holder_id
+      LEFT JOIN drawers d ON d.id = bh.drawer_id
+      ${where}
       ORDER BY
         CASE er.exception_level
           WHEN '紧急' THEN 1
@@ -378,9 +479,14 @@ router.get('/todo/list', (req, res) => {
         END,
         er.discovered_date ASC
       LIMIT ? OFFSET ?
-    `).all(limit, offset);
+    `).all(...params, limit, offset);
 
-    res.json({ success: true, total, page: parseInt(page) || 1, page_size: limit, data });
+    const withRelated = data.map(item => {
+      const related = getRelatedInfo(item, db);
+      return { ...item, ...related };
+    });
+
+    res.json({ success: true, total, page: parseInt(page) || 1, page_size: limit, data: withRelated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -389,72 +495,7 @@ router.get('/todo/list', (req, res) => {
 router.get('/sync/generate-time-based', (req, res) => {
   try {
     const result = db.transaction(() => {
-      let createdCount = 0;
-
-      const overdueDispatches = db.prepare(`
-        SELECT d.*, bh.responsible_person, bh.spec
-        FROM dispatches d
-        LEFT JOIN badge_holders bh ON bh.id = d.holder_id
-        WHERE d.returned = 0
-          AND d.expected_return_date IS NOT NULL
-          AND d.expected_return_date < datetime('now','localtime')
-      `).all();
-
-      for (const d of overdueDispatches) {
-        const existing = db.prepare(`
-          SELECT * FROM exception_records
-          WHERE source_type = 'dispatch' AND source_id = ? AND exception_type = '逾期未归还' AND status != '已闭环'
-        `).get(d.id);
-
-        if (!existing) {
-          const days = Math.floor((Date.now() - new Date(d.expected_return_date).getTime()) / (1000 * 60 * 60 * 24));
-          db.prepare(`
-            INSERT INTO exception_records (
-              holder_id, holder_code, exception_type, exception_level,
-              source_type, source_id, status, responsible_person,
-              discovered_date, description
-            ) VALUES (?, ?, '逾期未归还', '重要', 'dispatch', ?, '待处理', ?, ?, ?)
-          `).run(
-            d.holder_id, d.holder_code, d.id,
-            d.responsible_person || null,
-            d.expected_return_date,
-            `牌夹已逾期 ${days} 天未归还，领用人: ${d.recipient}`
-          );
-          createdCount++;
-        }
-      }
-
-      const reviewDelays = db.prepare(`
-        SELECT r.*, bh.responsible_person, bh.spec,
-               CAST((julianday('now','localtime') - julianday(r.recovery_date)) * 24 AS INTEGER) as delay_hours
-        FROM recoveries r
-        LEFT JOIN badge_holders bh ON bh.id = r.holder_id
-        WHERE r.review_status = '待复查'
-          AND CAST((julianday('now','localtime') - julianday(r.recovery_date)) * 24 AS INTEGER) >= 24
-      `).all();
-
-      for (const r of reviewDelays) {
-        const existing = db.prepare(`
-          SELECT * FROM exception_records
-          WHERE source_type = 'recovery' AND source_id = ? AND exception_type = '复查超时' AND status != '已闭环'
-        `).get(r.id);
-
-        if (!existing) {
-          db.prepare(`
-            INSERT INTO exception_records (
-              holder_id, holder_code, exception_type, exception_level,
-              source_type, source_id, status, responsible_person,
-              discovered_date, description
-            ) VALUES (?, ?, '复查超时', '一般', 'recovery', ?, '待处理', ?, ?, ?)
-          `).run(
-            r.holder_id, r.holder_code, r.id,
-            r.responsible_person || null,
-            r.recovery_date,
-            `回收后已超过 ${r.delay_hours} 小时未复查，回收时状态: ${r.condition}`
-          );
-          createdCount++;
-        }
-      }
+      const createdCount = syncTimeBasedExceptions(db);
 
       return { success: true, created: createdCount, message: `已生成 ${createdCount} 条时间驱动异常记录` };
     })();
@@ -465,4 +506,4 @@ router.get('/sync/generate-time-based', (req, res) => {
   }
 });
 
-module.exports = { exceptionsRouter: router, getOrCreateException, closeException };
+module.exports = { exceptionsRouter: router, getOrCreateException, closeException, syncTimeBasedExceptions };

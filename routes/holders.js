@@ -4,7 +4,7 @@ const db = require('../db');
 const router = express.Router();
 
 const VALID_STATUSES = [
-  '待配发', '已配发', '待整理', '待复查',
+  '待配发', '已配发', '已回收', '待整理', '待复查',
   '可继续使用', '缺件观察', '停用'
 ];
 
