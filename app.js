@@ -10,6 +10,7 @@ const alertsRoute = require('./routes/alerts');
 const { exceptionsRouter } = require('./routes/exceptions');
 const { extensionsRouter } = require('./routes/extensions');
 const { riskLedgerRouter } = require('./routes/riskLedger');
+const { handoversRouter } = require('./routes/handovers');
 
 const app = express();
 const PORT = 8123;
@@ -92,6 +93,14 @@ app.get('/', (req, res) => {
         'POST /api/risk-ledger/:risk_key/handle': '登记风险处理结果（处理人、处理结果、处理备注、处理状态）',
         'GET /api/risk-ledger/stats/summary': '风险统计汇总（按类型、等级、处理状态、责任人、领用人、趋势）',
         'GET /api/risk-ledger/options/filters': '获取筛选下拉选项（风险类型、等级、责任人、领用人、牌夹状态）'
+      },
+      handovers: {
+        'POST /api/handovers': '批量发起责任人交接（含风险提示，确认后执行）',
+        'GET /api/handovers': '交接记录列表（多条件筛选，含牌夹明细）',
+        'GET /api/handovers/:id': '交接详情（含每个牌夹当前状态及未闭环异常）',
+        'GET /api/handovers/holder/:holder_id': '牌夹交接历史',
+        'GET /api/handovers/stats/summary': '交接统计汇总（按责任人/规格/月份等汇总）',
+        'GET /api/handovers/options/filters': '获取筛选下拉选项'
       }
     }
   });
@@ -107,6 +116,7 @@ app.use('/api/alerts', alertsRoute);
 app.use('/api/exceptions', exceptionsRouter);
 app.use('/api/extensions', extensionsRouter);
 app.use('/api/risk-ledger', riskLedgerRouter);
+app.use('/api/handovers', handoversRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: '接口不存在', path: req.path });

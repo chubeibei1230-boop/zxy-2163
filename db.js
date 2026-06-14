@@ -172,6 +172,45 @@ const initDb = () => {
       FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
     );
 
+    CREATE TABLE IF NOT EXISTS handovers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      handover_code TEXT UNIQUE NOT NULL,
+      operator TEXT NOT NULL,
+      new_responsible_person TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      notes TEXT,
+      risk_confirmed INTEGER NOT NULL DEFAULT 0,
+      risk_warnings TEXT,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      risk_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE TABLE IF NOT EXISTS handover_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      handover_id INTEGER NOT NULL,
+      holder_id INTEGER NOT NULL,
+      holder_code TEXT NOT NULL,
+      spec TEXT,
+      drawer_code TEXT,
+      previous_responsible_person TEXT NOT NULL,
+      new_responsible_person TEXT NOT NULL,
+      holder_status TEXT,
+      risk_warning TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (handover_id) REFERENCES handovers(id),
+      FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_handover_items_handover ON handover_items(handover_id);
+    CREATE INDEX IF NOT EXISTS idx_handover_items_holder ON handover_items(holder_id);
+    CREATE INDEX IF NOT EXISTS idx_handover_items_previous ON handover_items(previous_responsible_person);
+    CREATE INDEX IF NOT EXISTS idx_handover_items_new ON handover_items(new_responsible_person);
+    CREATE INDEX IF NOT EXISTS idx_handovers_operator ON handovers(operator);
+    CREATE INDEX IF NOT EXISTS idx_handovers_new_person ON handovers(new_responsible_person);
+    CREATE INDEX IF NOT EXISTS idx_handovers_created ON handovers(created_at);
+
     CREATE INDEX IF NOT EXISTS idx_risk_handles_key ON risk_ledger_handles(risk_key);
     CREATE INDEX IF NOT EXISTS idx_risk_handles_holder ON risk_ledger_handles(holder_id);
     CREATE INDEX IF NOT EXISTS idx_risk_handles_status ON risk_ledger_handles(handle_status);

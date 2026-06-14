@@ -193,6 +193,14 @@ router.get('/:id', (req, res) => {
       ORDER BY created_at DESC
     `).all(req.params.id);
 
+    const handoverHistory = db.prepare(`
+      SELECT hi.*, h.handover_code, h.operator, h.reason, h.notes as handover_notes, h.created_at as handover_created_at
+      FROM handover_items hi
+      INNER JOIN handovers h ON h.id = hi.handover_id
+      WHERE hi.holder_id = ?
+      ORDER BY hi.created_at DESC
+    `).all(req.params.id);
+
     const openDispatch = dispatches.find(d => d.returned === 0) || null;
     let isOverdue = false;
     let overdueDays = 0;
@@ -222,6 +230,7 @@ router.get('/:id', (req, res) => {
       supplements,
       exceptions,
       extensions,
+      handover_history: handoverHistory,
       open_exceptions: openExceptions,
       extension_stats: {
         total: extensions.length,
