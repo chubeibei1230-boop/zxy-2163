@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { syncTimeBasedExceptions } = require('./exceptions');
 
 const router = express.Router();
 
@@ -95,7 +96,7 @@ router.post('/', (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  const { returned, recipient, start_date, end_date, page = 1, page_size = 20 } = req.query;
+  const { returned, recipient, start_date, end_date, is_overdue, page = 1, page_size = 20 } = req.query;
   const conditions = [];
   const params = [];
 
@@ -112,8 +113,10 @@ router.get('/', (req, res) => {
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM dispatches d ${where}`).get(...params).cnt;
-    const data = db.prepare(`
+    const rawData = db.prepare(`
       SELECT d.*, bh.spec, bh.lanyard_type, bh.responsible_person
       FROM dispatches d
       LEFT JOIN badge_holders bh ON bh.id = d.holder_id
@@ -122,7 +125,48 @@ router.get('/', (req, res) => {
       LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
 
-    res.json({ success: true, total, page: parseInt(page) || 1, page_size: limit, data });
+    const data = rawData.map(item => {
+      let isOverdue = false;
+      let overdueDays = 0;
+      let overdueHours = 0;
+      if (item.returned === 0 && item.expected_return_date) {
+        const now = new Date();
+        const expected = new Date(item.expected_return_date);
+        if (now > expected) {
+          isOverdue = true;
+          const diffMs = now.getTime() - expected.getTime();
+          overdueDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          overdueHours = Math.floor(diffMs / (1000 * 60 * 60));
+        }
+      }
+
+      const extStats = db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN approval_status = '待审批' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN approval_status = '已通过' THEN 1 ELSE 0 END) as approved,
+          SUM(CASE WHEN approval_status = '已驳回' THEN 1 ELSE 0 END) as rejected
+        FROM dispatch_extensions WHERE dispatch_id = ?
+      `).get(item.id);
+
+      return {
+        ...item,
+        overdue_info: {
+          is_overdue: isOverdue,
+          overdue_days: overdueDays,
+          overdue_hours: overdueHours
+        },
+        extension_stats: extStats || { total: 0, pending: 0, approved: 0, rejected: 0 }
+      };
+    });
+
+    let filteredData = data;
+    if (is_overdue !== undefined) {
+      const wantOverdue = is_overdue === 'true' || is_overdue === '1';
+      filteredData = data.filter(item => item.overdue_info.is_overdue === wantOverdue);
+    }
+
+    res.json({ success: true, total, page: parseInt(page) || 1, page_size: limit, data: filteredData });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -130,6 +174,8 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const dispatch = db.prepare(`
       SELECT d.*, bh.spec, bh.lanyard_type, bh.responsible_person, bh.status as holder_status
       FROM dispatches d
@@ -143,7 +189,53 @@ router.get('/:id', (req, res) => {
       SELECT * FROM recoveries WHERE dispatch_id = ?
     `).get(req.params.id);
 
-    res.json({ success: true, dispatch, recovery });
+    const extensions = db.prepare(`
+      SELECT * FROM dispatch_extensions
+      WHERE dispatch_id = ?
+      ORDER BY created_at DESC
+    `).all(req.params.id);
+
+    let isOverdue = false;
+    let overdueDays = 0;
+    let overdueHours = 0;
+    if (dispatch.returned === 0 && dispatch.expected_return_date) {
+      const now = new Date();
+      const expected = new Date(dispatch.expected_return_date);
+      if (now > expected) {
+        isOverdue = true;
+        const diffMs = now.getTime() - expected.getTime();
+        overdueDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        overdueHours = Math.floor(diffMs / (1000 * 60 * 60));
+      }
+    }
+
+    const pendingExtensions = extensions.filter(e => e.approval_status === '待审批').length;
+    const approvedExtensions = extensions.filter(e => e.approval_status === '已通过').length;
+
+    const overdueException = db.prepare(`
+      SELECT * FROM exception_records
+      WHERE source_type = 'dispatch' AND source_id = ? AND exception_type = '逾期未归还'
+      ORDER BY discovered_date DESC LIMIT 1
+    `).get(req.params.id);
+
+    res.json({
+      success: true,
+      dispatch,
+      recovery,
+      extensions,
+      extension_stats: {
+        total: extensions.length,
+        pending: pendingExtensions,
+        approved: approvedExtensions,
+        rejected: extensions.length - pendingExtensions - approvedExtensions
+      },
+      overdue_info: {
+        is_overdue: isOverdue,
+        overdue_days: overdueDays,
+        overdue_hours: overdueHours,
+        exception: overdueException || null
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

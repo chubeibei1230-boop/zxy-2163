@@ -430,6 +430,32 @@ router.get('/stats/summary', (req, res) => {
       ORDER BY date DESC
     `).all();
 
+    const extensionsTotal = db.prepare('SELECT COUNT(*) as cnt FROM dispatch_extensions').get().cnt;
+    const extensionsPending = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '待审批'").get().cnt;
+    const extensionsApproved = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已通过'").get().cnt;
+    const extensionsRejected = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已驳回'").get().cnt;
+
+    const currentOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM dispatches d
+      WHERE d.returned = 0
+        AND d.expected_return_date IS NOT NULL
+        AND d.expected_return_date < datetime('now','localtime')
+    `).get().cnt;
+
+    const closedOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM exception_records er
+      WHERE er.exception_type = '逾期未归还'
+        AND er.status = '已闭环'
+    `).get().cnt;
+
+    const totalOverdueRecords = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM exception_records er
+      WHERE er.exception_type = '逾期未归还'
+    `).get().cnt;
+
     res.json({
       success: true,
       data: {
@@ -441,7 +467,20 @@ router.get('/stats/summary', (req, res) => {
         by_type: byType,
         by_status: byStatus,
         by_level: byLevel,
-        recent_trend: recentTrend
+        recent_trend: recentTrend,
+        extensions: {
+          total: extensionsTotal,
+          pending: extensionsPending,
+          approved: extensionsApproved,
+          rejected: extensionsRejected,
+          approve_rate: extensionsTotal > 0 ? Math.round(extensionsApproved / extensionsTotal * 100) / 100 : 0
+        },
+        overdue: {
+          current_count: currentOverdue,
+          closed_count: closedOverdue,
+          total_records: totalOverdueRecords,
+          close_rate: totalOverdueRecords > 0 ? Math.round(closedOverdue / totalOverdueRecords * 100) / 100 : 0
+        }
       }
     });
   } catch (err) {
@@ -450,7 +489,7 @@ router.get('/stats/summary', (req, res) => {
 });
 
 router.get('/todo/list', (req, res) => {
-  const { page = 1, page_size = 50 } = req.query;
+  const { page = 1, page_size = 50, include_extensions = 'true' } = req.query;
   const { where, params } = buildExceptionFilters(req.query, true);
   const limit = Math.min(parseInt(page_size) || 50, 200);
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
@@ -486,7 +525,40 @@ router.get('/todo/list', (req, res) => {
       return { ...item, ...related };
     });
 
-    res.json({ success: true, total, page: parseInt(page) || 1, page_size: limit, data: withRelated });
+    let pendingExtensions = [];
+    if (include_extensions === 'true' || include_extensions === '1') {
+      pendingExtensions = db.prepare(`
+        SELECT de.*,
+               d.recipient, d.dispatch_date, d.purpose, d.expected_return_date,
+               bh.spec, bh.lanyard_type, bh.responsible_person
+        FROM dispatch_extensions de
+        LEFT JOIN dispatches d ON d.id = de.dispatch_id
+        LEFT JOIN badge_holders bh ON bh.id = de.holder_id
+        WHERE de.approval_status = '待审批'
+        ORDER BY de.created_at ASC
+      `).all();
+    }
+
+    const currentOverdueCount = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM dispatches d
+      WHERE d.returned = 0
+        AND d.expected_return_date IS NOT NULL
+        AND d.expected_return_date < datetime('now','localtime')
+    `).get().cnt;
+
+    const pendingExtensionCount = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '待审批'").get().cnt;
+
+    res.json({
+      success: true,
+      total,
+      page: parseInt(page) || 1,
+      page_size: limit,
+      data: withRelated,
+      pending_extensions: pendingExtensions,
+      pending_extension_count: pendingExtensionCount,
+      current_overdue_count: currentOverdueCount
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

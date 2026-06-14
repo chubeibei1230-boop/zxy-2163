@@ -119,6 +119,30 @@ const initDb = () => {
       FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
     );
 
+    CREATE TABLE IF NOT EXISTS dispatch_extensions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dispatch_id INTEGER NOT NULL,
+      holder_id INTEGER NOT NULL,
+      holder_code TEXT NOT NULL,
+      applicant TEXT NOT NULL,
+      extension_reason TEXT NOT NULL,
+      original_expected_return_date TEXT NOT NULL,
+      new_expected_return_date TEXT NOT NULL,
+      approval_status TEXT NOT NULL DEFAULT '待审批',
+      approver TEXT,
+      approval_notes TEXT,
+      approval_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (dispatch_id) REFERENCES dispatches(id),
+      FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_extensions_dispatch ON dispatch_extensions(dispatch_id);
+    CREATE INDEX IF NOT EXISTS idx_extensions_holder ON dispatch_extensions(holder_id);
+    CREATE INDEX IF NOT EXISTS idx_extensions_status ON dispatch_extensions(approval_status);
+    CREATE INDEX IF NOT EXISTS idx_extensions_applicant ON dispatch_extensions(applicant);
+
     CREATE INDEX IF NOT EXISTS idx_holders_status ON badge_holders(status);
     CREATE INDEX IF NOT EXISTS idx_holders_spec ON badge_holders(spec);
     CREATE INDEX IF NOT EXISTS idx_holders_lanyard ON badge_holders(lanyard_type);
@@ -132,6 +156,26 @@ const initDb = () => {
     CREATE INDEX IF NOT EXISTS idx_exceptions_holder ON exception_records(holder_id);
     CREATE INDEX IF NOT EXISTS idx_exceptions_person ON exception_records(responsible_person);
     CREATE INDEX IF NOT EXISTS idx_exceptions_source ON exception_records(source_type, source_id);
+
+    CREATE TABLE IF NOT EXISTS risk_ledger_handles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      risk_key TEXT NOT NULL,
+      holder_id INTEGER,
+      holder_code TEXT NOT NULL,
+      risk_type TEXT NOT NULL,
+      handle_result TEXT,
+      handler TEXT,
+      handle_notes TEXT,
+      handle_status TEXT NOT NULL DEFAULT '待处理',
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_risk_handles_key ON risk_ledger_handles(risk_key);
+    CREATE INDEX IF NOT EXISTS idx_risk_handles_holder ON risk_ledger_handles(holder_id);
+    CREATE INDEX IF NOT EXISTS idx_risk_handles_status ON risk_ledger_handles(handle_status);
+    CREATE INDEX IF NOT EXISTS idx_risk_handles_type ON risk_ledger_handles(risk_type);
   `);
 
   try {

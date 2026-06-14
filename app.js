@@ -8,6 +8,8 @@ const { reviewsRouter, lossRouter } = require('./routes/reviews');
 const statsRoute = require('./routes/stats');
 const alertsRoute = require('./routes/alerts');
 const { exceptionsRouter } = require('./routes/exceptions');
+const { extensionsRouter } = require('./routes/extensions');
+const { riskLedgerRouter } = require('./routes/riskLedger');
 
 const app = express();
 const PORT = 8123;
@@ -74,6 +76,22 @@ app.get('/', (req, res) => {
         'GET /api/exceptions/stats/summary': '异常统计汇总',
         'GET /api/exceptions/todo/list': '异常待办清单',
         'GET /api/exceptions/sync/generate-time-based': '生成时间驱动异常（逾期、超时）'
+      },
+      extensions: {
+        'POST /api/extensions': '创建延期归还申请',
+        'POST /api/extensions/:id/approve': '审批通过延期申请',
+        'POST /api/extensions/:id/reject': '审批驳回延期申请',
+        'GET /api/extensions': '延期申请列表（多条件筛选）',
+        'GET /api/extensions/:id': '延期申请详情（含该配发所有延期历史）',
+        'GET /api/extensions/stats/summary': '延期申请统计汇总',
+        'GET /api/extensions/overdue/list': '逾期牌夹列表（含逾期时长、延期历史、关联异常）'
+      },
+      risk_ledger: {
+        'GET /api/risk-ledger': '风险台账清单（支持多条件筛选、按牌夹/领用人/责任人聚合、分页）',
+        'GET /api/risk-ledger/:risk_key': '风险详情（含牌夹基础信息、配发/回收/复查/异常/延期历史及处理记录）',
+        'POST /api/risk-ledger/:risk_key/handle': '登记风险处理结果（处理人、处理结果、处理备注、处理状态）',
+        'GET /api/risk-ledger/stats/summary': '风险统计汇总（按类型、等级、处理状态、责任人、领用人、趋势）',
+        'GET /api/risk-ledger/options/filters': '获取筛选下拉选项（风险类型、等级、责任人、领用人、牌夹状态）'
       }
     }
   });
@@ -87,6 +105,8 @@ app.use('/api/loss', lossRouter);
 app.use('/api/stats', statsRoute);
 app.use('/api/alerts', alertsRoute);
 app.use('/api/exceptions', exceptionsRouter);
+app.use('/api/extensions', extensionsRouter);
+app.use('/api/risk-ledger', riskLedgerRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: '接口不存在', path: req.path });

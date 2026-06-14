@@ -296,6 +296,79 @@ router.get('/all', (req, res) => {
       top_pending: recentExceptions
     };
 
+    const extensionsTotal = db.prepare('SELECT COUNT(*) as cnt FROM dispatch_extensions').get().cnt;
+    const extensionsPending = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '待审批'").get().cnt;
+    const extensionsApproved = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已通过'").get().cnt;
+    const extensionsRejected = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已驳回'").get().cnt;
+
+    const currentOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM dispatches d
+      WHERE d.returned = 0
+        AND d.expected_return_date IS NOT NULL
+        AND d.expected_return_date < datetime('now','localtime')
+    `).get().cnt;
+
+    const closedOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM exception_records er
+      WHERE er.exception_type = '逾期未归还'
+        AND er.status = '已闭环'
+    `).get().cnt;
+
+    result.alerts.extension_overview = {
+      total: extensionsTotal,
+      pending: extensionsPending,
+      approved: extensionsApproved,
+      rejected: extensionsRejected,
+      approve_rate: extensionsTotal > 0 ? Math.round(extensionsApproved / extensionsTotal * 100) / 100 : 0,
+      needs_attention: extensionsPending > 0
+    };
+
+    const pendingExtensionList = db.prepare(`
+      SELECT de.*,
+             d.recipient, d.dispatch_date, d.expected_return_date,
+             bh.spec, bh.responsible_person
+      FROM dispatch_extensions de
+      LEFT JOIN dispatches d ON d.id = de.dispatch_id
+      LEFT JOIN badge_holders bh ON bh.id = de.holder_id
+      WHERE de.approval_status = '待审批'
+      ORDER BY de.created_at ASC
+      LIMIT 10
+    `).all();
+
+    result.alerts.extension_overview.pending_list = pendingExtensionList;
+
+    result.alerts.overdue_overview = {
+      current_count: currentOverdue,
+      closed_count: closedOverdue,
+      total_records: currentOverdue + closedOverdue,
+      close_rate: (currentOverdue + closedOverdue) > 0 ? Math.round(closedOverdue / (currentOverdue + closedOverdue) * 100) / 100 : 0,
+      needs_attention: currentOverdue > 0
+    };
+
+    const recentOverdueList = db.prepare(`
+      SELECT
+        d.id as dispatch_id,
+        d.holder_id,
+        d.holder_code,
+        d.recipient,
+        d.dispatch_date,
+        d.expected_return_date,
+        bh.spec,
+        bh.responsible_person,
+        CAST((julianday('now','localtime') - julianday(d.expected_return_date)) AS INTEGER) as overdue_days
+      FROM dispatches d
+      LEFT JOIN badge_holders bh ON bh.id = d.holder_id
+      WHERE d.returned = 0
+        AND d.expected_return_date IS NOT NULL
+        AND d.expected_return_date < datetime('now','localtime')
+      ORDER BY d.expected_return_date ASC
+      LIMIT 10
+    `).all();
+
+    result.alerts.overdue_overview.current_list = recentOverdueList;
+
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

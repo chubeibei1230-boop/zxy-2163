@@ -148,6 +148,32 @@ router.get('/status-overview', (req, res) => {
       GROUP BY exception_type ORDER BY count DESC
     `).all();
 
+    const extensionsTotal = db.prepare('SELECT COUNT(*) as cnt FROM dispatch_extensions').get().cnt;
+    const extensionsPending = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '待审批'").get().cnt;
+    const extensionsApproved = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已通过'").get().cnt;
+    const extensionsRejected = db.prepare("SELECT COUNT(*) as cnt FROM dispatch_extensions WHERE approval_status = '已驳回'").get().cnt;
+
+    const currentOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM dispatches d
+      WHERE d.returned = 0
+        AND d.expected_return_date IS NOT NULL
+        AND d.expected_return_date < datetime('now','localtime')
+    `).get().cnt;
+
+    const closedOverdue = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM exception_records er
+      WHERE er.exception_type = '逾期未归还'
+        AND er.status = '已闭环'
+    `).get().cnt;
+
+    const totalOverdueRecords = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM exception_records er
+      WHERE er.exception_type = '逾期未归还'
+    `).get().cnt;
+
     res.json({
       success: true,
       data: {
@@ -164,6 +190,19 @@ router.get('/status-overview', (req, res) => {
           closed: exceptionsClosed,
           close_rate: exceptionsTotal > 0 ? Math.round(exceptionsClosed / exceptionsTotal * 100) / 100 : 0,
           by_type: exceptionsByType
+        },
+        extensions: {
+          total: extensionsTotal,
+          pending: extensionsPending,
+          approved: extensionsApproved,
+          rejected: extensionsRejected,
+          approve_rate: extensionsTotal > 0 ? Math.round(extensionsApproved / extensionsTotal * 100) / 100 : 0
+        },
+        overdue: {
+          current_count: currentOverdue,
+          closed_count: closedOverdue,
+          total_records: totalOverdueRecords,
+          close_rate: totalOverdueRecords > 0 ? Math.round(closedOverdue / totalOverdueRecords * 100) / 100 : 0
         }
       }
     });

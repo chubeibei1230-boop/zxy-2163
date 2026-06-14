@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { syncTimeBasedExceptions } = require('./exceptions');
 
 const router = express.Router();
 
@@ -146,6 +147,8 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   try {
+    db.transaction(() => syncTimeBasedExceptions(db))();
+
     const holder = db.prepare(`
       SELECT bh.*, d.drawer_code, ib.batch_code, ib.operator as batch_operator, ib.created_at as batch_created_at, ib.notes as batch_notes
       FROM badge_holders bh
@@ -184,9 +187,55 @@ router.get('/:id', (req, res) => {
         discovered_date DESC
     `).all(req.params.id, holder.holder_code);
 
+    const extensions = db.prepare(`
+      SELECT * FROM dispatch_extensions
+      WHERE holder_id = ?
+      ORDER BY created_at DESC
+    `).all(req.params.id);
+
+    const openDispatch = dispatches.find(d => d.returned === 0) || null;
+    let isOverdue = false;
+    let overdueDays = 0;
+    let overdueHours = 0;
+    if (openDispatch && openDispatch.expected_return_date) {
+      const now = new Date();
+      const expected = new Date(openDispatch.expected_return_date);
+      if (now > expected) {
+        isOverdue = true;
+        const diffMs = now.getTime() - expected.getTime();
+        overdueDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        overdueHours = Math.floor(diffMs / (1000 * 60 * 60));
+      }
+    }
+
+    const pendingExtensions = extensions.filter(e => e.approval_status === '待审批').length;
+    const approvedExtensions = extensions.filter(e => e.approval_status === '已通过').length;
+
     const openExceptions = exceptions.filter(e => e.status !== '已闭环');
 
-    res.json({ success: true, holder, dispatches, recoveries, reviews, supplements, exceptions, open_exceptions: openExceptions });
+    res.json({
+      success: true,
+      holder,
+      dispatches,
+      recoveries,
+      reviews,
+      supplements,
+      exceptions,
+      extensions,
+      open_exceptions: openExceptions,
+      extension_stats: {
+        total: extensions.length,
+        pending: pendingExtensions,
+        approved: approvedExtensions,
+        rejected: extensions.length - pendingExtensions - approvedExtensions
+      },
+      overdue_info: {
+        is_overdue: isOverdue,
+        overdue_days: overdueDays,
+        overdue_hours: overdueHours,
+        current_open_dispatch: openDispatch
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
