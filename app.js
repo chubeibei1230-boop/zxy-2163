@@ -7,6 +7,7 @@ const recoveriesRoute = require('./routes/recoveries');
 const { reviewsRouter, lossRouter } = require('./routes/reviews');
 const statsRoute = require('./routes/stats');
 const alertsRoute = require('./routes/alerts');
+const { exceptionsRouter } = require('./routes/exceptions');
 
 const app = express();
 const PORT = 8123;
@@ -64,6 +65,15 @@ app.get('/', (req, res) => {
         'GET /api/alerts/consecutive-losses': '同一责任人连续遗失',
         'GET /api/alerts/review-delays': '复查拖延',
         'GET /api/alerts/drawer-overcapacity': '抽屉容量偏满'
+      },
+      exceptions: {
+        'GET /api/exceptions': '异常记录列表（多条件筛选）',
+        'GET /api/exceptions/:id': '异常详情（含关联配发/回收/复查/补记）',
+        'POST /api/exceptions/:id/handle': '异常处理登记（闭环处理）',
+        'PUT /api/exceptions/:id': '更新异常信息',
+        'GET /api/exceptions/stats/summary': '异常统计汇总',
+        'GET /api/exceptions/todo/list': '异常待办清单',
+        'GET /api/exceptions/sync/generate-time-based': '生成时间驱动异常（逾期、超时）'
       }
     }
   });
@@ -76,6 +86,7 @@ app.use('/api/reviews', reviewsRouter);
 app.use('/api/loss', lossRouter);
 app.use('/api/stats', statsRoute);
 app.use('/api/alerts', alertsRoute);
+app.use('/api/exceptions', exceptionsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: '接口不存在', path: req.path });

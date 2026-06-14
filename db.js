@@ -98,6 +98,27 @@ const initDb = () => {
       FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
     );
 
+    CREATE TABLE IF NOT EXISTS exception_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      holder_id INTEGER,
+      holder_code TEXT NOT NULL,
+      exception_type TEXT NOT NULL,
+      exception_level TEXT NOT NULL DEFAULT '一般',
+      source_type TEXT NOT NULL,
+      source_id INTEGER,
+      status TEXT NOT NULL DEFAULT '待处理',
+      responsible_person TEXT,
+      discovered_date TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      description TEXT,
+      handler TEXT,
+      handle_date TEXT,
+      handle_result TEXT,
+      handle_notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (holder_id) REFERENCES badge_holders(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_holders_status ON badge_holders(status);
     CREATE INDEX IF NOT EXISTS idx_holders_spec ON badge_holders(spec);
     CREATE INDEX IF NOT EXISTS idx_holders_lanyard ON badge_holders(lanyard_type);
@@ -106,6 +127,11 @@ const initDb = () => {
     CREATE INDEX IF NOT EXISTS idx_holders_batch ON badge_holders(batch_id);
     CREATE INDEX IF NOT EXISTS idx_dispatches_returned ON dispatches(returned);
     CREATE INDEX IF NOT EXISTS idx_recoveries_review ON recoveries(review_status);
+    CREATE INDEX IF NOT EXISTS idx_exceptions_type ON exception_records(exception_type);
+    CREATE INDEX IF NOT EXISTS idx_exceptions_status ON exception_records(status);
+    CREATE INDEX IF NOT EXISTS idx_exceptions_holder ON exception_records(holder_id);
+    CREATE INDEX IF NOT EXISTS idx_exceptions_person ON exception_records(responsible_person);
+    CREATE INDEX IF NOT EXISTS idx_exceptions_source ON exception_records(source_type, source_id);
   `);
 
   try {

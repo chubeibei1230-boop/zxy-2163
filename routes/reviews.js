@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { getOrCreateException, closeException } = require('./exceptions');
 
 const router = express.Router();
 
@@ -35,6 +36,20 @@ router.post('/', (req, res) => {
       const info = insertReview.run(recovery.id, holder.id, reviewer, review_result, review_notes || null);
       db.prepare("UPDATE recoveries SET review_status = '复查通过' WHERE id = ?").run(recovery.id);
       db.prepare('UPDATE badge_holders SET status = ? WHERE id = ?').run(review_result, holder.id);
+
+      closeException('recovery', recovery.id, '复查超时', reviewer, `复查完成，结果：${review_result}`, review_notes, db);
+
+      if (recovery.has_missing_parts) {
+        if (review_result === '可继续使用' || review_result === '停用' || review_result === '待整理') {
+          closeException('recovery', recovery.id, '缺件异常', reviewer, `复查后${review_result}`, review_notes, db);
+        }
+      }
+
+      if (recovery.condition && recovery.condition !== '完好') {
+        if (review_result === '可继续使用' || review_result === '停用' || review_result === '缺件观察') {
+          closeException('recovery', recovery.id, '损坏异常', reviewer, `复查后${review_result}`, review_notes, db);
+        }
+      }
 
       return {
         success: true,
@@ -115,14 +130,23 @@ lossRouter.post('/', (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?)
       `);
       const info = insert.run(hid, hcode, reporter, loss_date || null, loss_description, supplement_notes || null);
+      const supplementId = info.lastInsertRowid;
 
       if (holder && holder.status !== '停用') {
         db.prepare("UPDATE badge_holders SET status = '缺件观察' WHERE id = ?").run(holder.id);
       }
 
+      getOrCreateException(
+        hid, hcode, '遗失异常',
+        'loss_supplement', supplementId,
+        loss_description,
+        holder ? holder.responsible_person : null,
+        db
+      );
+
       return {
         success: true,
-        supplement_id: info.lastInsertRowid,
+        supplement_id: supplementId,
         holder_id: hid,
         holder_code: hcode,
         message: holder ? '补记成功，牌夹状态已更新为「缺件观察」' : '补记成功（牌夹不在库中，仅记录）'
@@ -171,7 +195,7 @@ lossRouter.get('/', (req, res) => {
 });
 
 lossRouter.put('/:id/resolve', (req, res) => {
-  const { resolved_notes } = req.body;
+  const { resolved_notes, handler } = req.body;
   try {
     const rec = db.prepare('SELECT * FROM loss_supplements WHERE id = ?').get(req.params.id);
     if (!rec) return res.status(404).json({ error: '补记记录不存在' });
@@ -179,6 +203,8 @@ lossRouter.put('/:id/resolve', (req, res) => {
 
     db.prepare('UPDATE loss_supplements SET is_resolved = 1, supplement_notes = COALESCE(?, supplement_notes) WHERE id = ?')
       .run(resolved_notes || null, req.params.id);
+
+    closeException('loss_supplement', rec.id, '遗失异常', handler || null, '已解决', resolved_notes, db);
 
     res.json({ success: true, message: '已标记为解决' });
   } catch (err) {

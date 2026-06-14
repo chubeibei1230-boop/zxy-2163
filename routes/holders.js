@@ -172,7 +172,21 @@ router.get('/:id', (req, res) => {
       SELECT * FROM loss_supplements WHERE holder_id = ? OR holder_code = ? ORDER BY report_date DESC
     `).all(req.params.id, holder.holder_code);
 
-    res.json({ success: true, holder, dispatches, recoveries, reviews, supplements });
+    const exceptions = db.prepare(`
+      SELECT * FROM exception_records
+      WHERE holder_id = ? OR (holder_code = ? AND holder_id IS NULL)
+      ORDER BY
+        CASE status
+          WHEN '待处理' THEN 1
+          WHEN '处理中' THEN 2
+          WHEN '已闭环' THEN 3
+        END,
+        discovered_date DESC
+    `).all(req.params.id, holder.holder_code);
+
+    const openExceptions = exceptions.filter(e => e.status !== '已闭环');
+
+    res.json({ success: true, holder, dispatches, recoveries, reviews, supplements, exceptions, open_exceptions: openExceptions });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -250,6 +250,49 @@ router.get('/all', (req, res) => {
       threshold_ratio: 0.8
     };
 
+    const exceptionSummary = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        COALESCE(SUM(CASE WHEN status = '待处理' THEN 1 ELSE 0 END), 0) as pending,
+        COALESCE(SUM(CASE WHEN status = '处理中' THEN 1 ELSE 0 END), 0) as processing,
+        COALESCE(SUM(CASE WHEN status = '已闭环' THEN 1 ELSE 0 END), 0) as closed
+      FROM exception_records
+    `).get();
+
+    const exceptionsByType = db.prepare(`
+      SELECT exception_type, exception_level, COUNT(*) as count,
+             SUM(CASE WHEN status != '已闭环' THEN 1 ELSE 0 END) as open_count
+      FROM exception_records
+      GROUP BY exception_type, exception_level
+      ORDER BY count DESC
+    `).all();
+
+    const recentExceptions = db.prepare(`
+      SELECT er.*, bh.spec, bh.responsible_person
+      FROM exception_records er
+      LEFT JOIN badge_holders bh ON bh.id = er.holder_id
+      WHERE er.status != '已闭环'
+      ORDER BY
+        CASE er.exception_level
+          WHEN '紧急' THEN 1
+          WHEN '重要' THEN 2
+          WHEN '一般' THEN 3
+        END,
+        er.discovered_date ASC
+      LIMIT 10
+    `).all();
+
+    result.alerts.exception_overview = {
+      total: exceptionSummary.total,
+      pending: exceptionSummary.pending,
+      processing: exceptionSummary.processing,
+      closed: exceptionSummary.closed,
+      open_total: (exceptionSummary.pending || 0) + (exceptionSummary.processing || 0),
+      close_rate: exceptionSummary.total > 0 ? Math.round(exceptionSummary.closed / exceptionSummary.total * 100) / 100 : 0,
+      by_type: exceptionsByType,
+      top_pending: recentExceptions
+    };
+
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

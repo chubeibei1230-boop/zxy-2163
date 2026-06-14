@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { getOrCreateException, closeException } = require('./exceptions');
 
 const router = express.Router();
 
@@ -73,9 +74,34 @@ router.post('/', (req, res) => {
       db.prepare('UPDATE dispatches SET returned = 1 WHERE id = ?').run(dispatch.id);
       db.prepare('UPDATE badge_holders SET status = ? WHERE id = ?').run(newStatus, holder.id);
 
+      const recoveryId = info.lastInsertRowid;
+
+      if (hasMissing) {
+        getOrCreateException(
+          holder.id, holder.holder_code, '缺件异常',
+          'recovery', recoveryId,
+          missing_parts_description || '回收时发现缺件',
+          holder.responsible_person,
+          db
+        );
+      }
+
+      const cond = condition || '完好';
+      if (cond !== '完好') {
+        getOrCreateException(
+          holder.id, holder.holder_code, '损坏异常',
+          'recovery', recoveryId,
+          damage_description || `回收时发现牌夹${cond}`,
+          holder.responsible_person,
+          db
+        );
+      }
+
+      closeException('dispatch', dispatch.id, '逾期未归还', null, '已归还', null, db);
+
       return {
         success: true,
-        recovery_id: info.lastInsertRowid,
+        recovery_id: recoveryId,
         holder_id: holder.id,
         holder_code: holder.holder_code,
         new_status: newStatus,

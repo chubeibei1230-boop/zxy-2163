@@ -133,6 +133,18 @@ router.get('/status-overview', (req, res) => {
     const recoveriesPending = db.prepare("SELECT COUNT(*) as cnt FROM recoveries WHERE review_status = '待复查'").get().cnt;
     const lossUnresolved = db.prepare("SELECT COUNT(*) as cnt FROM loss_supplements WHERE is_resolved = 0").get().cnt;
 
+    const exceptionsTotal = db.prepare('SELECT COUNT(*) as cnt FROM exception_records').get().cnt;
+    const exceptionsPending = db.prepare("SELECT COUNT(*) as cnt FROM exception_records WHERE status = '待处理'").get().cnt;
+    const exceptionsProcessing = db.prepare("SELECT COUNT(*) as cnt FROM exception_records WHERE status = '处理中'").get().cnt;
+    const exceptionsClosed = db.prepare("SELECT COUNT(*) as cnt FROM exception_records WHERE status = '已闭环'").get().cnt;
+
+    const exceptionsByType = db.prepare(`
+      SELECT exception_type, COUNT(*) as count,
+             SUM(CASE WHEN status != '已闭环' THEN 1 ELSE 0 END) as open_count
+      FROM exception_records
+      GROUP BY exception_type ORDER BY count DESC
+    `).all();
+
     res.json({
       success: true,
       data: {
@@ -141,7 +153,15 @@ router.get('/status-overview', (req, res) => {
         total_dispatches: dispatchesTotal,
         open_dispatches: dispatchesOpen,
         pending_reviews: recoveriesPending,
-        unresolved_losses: lossUnresolved
+        unresolved_losses: lossUnresolved,
+        exceptions: {
+          total: exceptionsTotal,
+          pending: exceptionsPending,
+          processing: exceptionsProcessing,
+          closed: exceptionsClosed,
+          close_rate: exceptionsTotal > 0 ? Math.round(exceptionsClosed / exceptionsTotal * 100) / 100 : 0,
+          by_type: exceptionsByType
+        }
       }
     });
   } catch (err) {
